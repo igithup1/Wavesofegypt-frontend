@@ -1,16 +1,16 @@
 import React from 'react';
 import { useAuth } from '@/contexts/AuthContext';
-import { useGetAdminDashboard, useListBookings, useUpdateBooking } from '@workspace/api-client-react';
+import { useGetAdminDashboard, useListBookings, useUpdateBooking, useListReviews, getListReviewsQueryKey, getGetTourQueryKey } from '@workspace/api-client-react';
 import Layout from '@/components/layout/Layout';
 import { Link, useLocation } from 'wouter';
-import { Users, Building2, Map, CreditCard, Activity, ChevronDown, Calendar, Filter, RefreshCw, BarChart3, Mail, CheckCircle2, XCircle, Send } from 'lucide-react';
+import { Users, Building2, Map, CreditCard, Activity, ChevronDown, Calendar, Filter, RefreshCw, BarChart3, Mail, CheckCircle2, XCircle, Send, Star, Trash2, MessageSquare, Pencil, Search, Shield, UserX, UserCheck } from 'lucide-react';
 import { format } from 'date-fns';
 import { useQueryClient } from '@tanstack/react-query';
 import { getListBookingsQueryKey } from '@workspace/api-client-react';
 import type { Booking } from '@workspace/api-client-react';
 
 type BookingStatus = 'pending' | 'confirmed' | 'cancelled' | 'completed';
-type TabKey = 'overview' | 'bookings' | 'tours' | 'email';
+type TabKey = 'overview' | 'bookings' | 'tours' | 'reviews' | 'email' | 'users';
 
 const STATUS_LABELS: Record<BookingStatus, string> = {
   pending: 'Pending',
@@ -31,6 +31,64 @@ function StatusBadge({ status }: { status: BookingStatus }) {
     <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold border ${STATUS_COLORS[status]}`}>
       {STATUS_LABELS[status]}
     </span>
+  );
+}
+
+type ResendState = 'idle' | 'sending' | 'success' | 'error';
+
+function ResendConfirmationButton({ bookingId }: { bookingId: number }) {
+  const [state, setState] = React.useState<ResendState>('idle');
+  const [message, setMessage] = React.useState('');
+  const timerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  React.useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
+
+  const handleClick = async () => {
+    setState('sending');
+    setMessage('');
+    try {
+      const resp = await fetch(`/api/bookings/${bookingId}/resend-confirmation`, { method: 'POST' });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok) {
+        setState('success');
+        setMessage(data.message ?? 'Email sent');
+      } else {
+        setState('error');
+        setMessage(data.error ?? 'Failed to send email');
+      }
+    } catch {
+      setState('error');
+      setMessage('Network error');
+    }
+    timerRef.current = setTimeout(() => { setState('idle'); setMessage(''); }, 4000);
+  };
+
+  if (state === 'success') {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700">
+        <CheckCircle2 className="w-3.5 h-3.5" /> Sent
+      </span>
+    );
+  }
+
+  if (state === 'error') {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs font-medium text-red-600" title={message}>
+        <XCircle className="w-3.5 h-3.5" /> Failed
+      </span>
+    );
+  }
+
+  return (
+    <button
+      onClick={handleClick}
+      disabled={state === 'sending'}
+      title="Resend confirmation email to traveler"
+      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border border-border bg-background hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-wait"
+    >
+      <Send className={`w-3 h-3 ${state === 'sending' ? 'animate-pulse' : ''}`} />
+      {state === 'sending' ? 'Sending…' : 'Resend email'}
+    </button>
   );
 }
 
@@ -91,8 +149,13 @@ export default function AdminDashboard() {
   React.useEffect(() => { setPage(0); }, [statusFilter, dateFrom, dateTo]);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const { data: dashboard, isLoading: isDashLoading } = useGetAdminDashboard({
-    query: { enabled: !!user && user.role === 'admin' } as any,
+  const { data: dashboard, isLoading: isDashLoading, dataUpdatedAt: dashDataUpdatedAt } = useGetAdminDashboard({
+    query: {
+      enabled: !!user && user.role === 'admin',
+      // Auto-poll every 30 s while the Overview tab is active
+      refetchInterval: activeTab === 'overview' ? 30_000 : false,
+      refetchIntervalInBackground: false,
+    } as any,
   });
 
   // Paginated bookings query — uses server-side date + status filtering
@@ -139,6 +202,14 @@ export default function AdminDashboard() {
     if (secondsAgo < 5) return 'just now';
     if (secondsAgo < 60) return `${secondsAgo}s ago`;
     return `${Math.floor(secondsAgo / 60)}m ago`;
+  })();
+
+  const dashSecondsAgo = dashDataUpdatedAt ? Math.floor((Date.now() - dashDataUpdatedAt) / 1_000) : null;
+  const dashLastUpdatedLabel = (() => {
+    if (dashSecondsAgo === null) return null;
+    if (dashSecondsAgo < 5) return 'just now';
+    if (dashSecondsAgo < 60) return `${dashSecondsAgo}s ago`;
+    return `${Math.floor(dashSecondsAgo / 60)}m ago`;
   })();
 
   React.useEffect(() => {
@@ -193,6 +264,8 @@ export default function AdminDashboard() {
     { key: 'overview', label: 'Overview', icon: <Activity className="w-4 h-4" /> },
     { key: 'bookings', label: 'Bookings', icon: <CreditCard className="w-4 h-4" /> },
     { key: 'tours',    label: 'By Tour',  icon: <BarChart3 className="w-4 h-4" /> },
+    { key: 'reviews',  label: 'Reviews',  icon: <Star className="w-4 h-4" /> },
+    { key: 'users',    label: 'Users',    icon: <Users className="w-4 h-4" /> },
     { key: 'email',    label: 'Email',    icon: <Mail className="w-4 h-4" /> },
   ];
 
@@ -235,6 +308,15 @@ export default function AdminDashboard() {
         {/* ── OVERVIEW TAB ── */}
         {activeTab === 'overview' && (
           <>
+            {/* Last updated indicator */}
+            {dashLastUpdatedLabel && (
+              <div className="flex justify-end mb-4">
+                <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground/60">
+                  <RefreshCw className="w-3 h-3" />
+                  Stats updated {dashLastUpdatedLabel} · auto-refreshes every 30s
+                </span>
+              </div>
+            )}
             {/* Stats Grid */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-6 mb-12">
               <div className="bg-card p-6 rounded-2xl border border-border shadow-sm">
@@ -461,6 +543,7 @@ export default function AdminDashboard() {
                         <th className="px-6 py-4 font-medium text-right">Total</th>
                         <th className="px-6 py-4 font-medium">Status</th>
                         <th className="px-6 py-4 font-medium text-muted-foreground/60">Booked</th>
+                        <th className="px-6 py-4 font-medium">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border">
@@ -495,6 +578,9 @@ export default function AdminDashboard() {
                           </td>
                           <td className="px-6 py-4 text-xs text-muted-foreground/60 whitespace-nowrap">
                             {format(new Date(booking.createdAt), 'MMM dd, yyyy')}
+                          </td>
+                          <td className="px-6 py-4">
+                            <ResendConfirmationButton bookingId={booking.id} />
                           </td>
                         </tr>
                       ))}
@@ -621,6 +707,16 @@ export default function AdminDashboard() {
             )}
           </div>
         )}
+        {/* ── REVIEWS TAB ── */}
+        {activeTab === 'reviews' && (
+          <ReviewsPanel />
+        )}
+
+        {/* ── USERS TAB ── */}
+        {activeTab === 'users' && (
+          <UsersPanel currentUserId={user?.id ?? 0} />
+        )}
+
         {/* ── EMAIL SETTINGS TAB ── */}
         {activeTab === 'email' && (
           <EmailSettingsPanel adminEmail={user?.email ?? ''} />
@@ -628,6 +724,259 @@ export default function AdminDashboard() {
 
       </div>
     </Layout>
+  );
+}
+
+// ── Reviews Moderation Panel ─────────────────────────────────────────────────
+
+function ReviewsPanel() {
+  const queryClient = useQueryClient();
+  const [tourIdFilter, setTourIdFilter] = React.useState('');
+  const [deletingId, setDeletingId] = React.useState<number | null>(null);
+  const [editingId, setEditingId] = React.useState<number | null>(null);
+  const [editRating, setEditRating] = React.useState(5);
+  const [editComment, setEditComment] = React.useState('');
+  const [actionResult, setActionResult] = React.useState<{ ok: boolean; message: string } | null>(null);
+
+  const parsedTourId = tourIdFilter ? parseInt(tourIdFilter, 10) : undefined;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { data: reviews, isLoading, refetch } = useListReviews(
+    { tourId: parsedTourId, limit: 100 } as any,
+    { query: { enabled: true } } as any,
+  );
+
+  const handleDelete = async (reviewId: number, tourId: number) => {
+    if (!confirm('Delete this review? This will recalculate the tour rating immediately.')) return;
+    setDeletingId(reviewId);
+    setActionResult(null);
+    try {
+      const token = localStorage.getItem('auth_token');
+      const resp = await fetch(`/api/reviews/${reviewId}`, {
+        method: 'DELETE',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      const data = await resp.json();
+      if (resp.ok) {
+        setActionResult({ ok: true, message: 'Review deleted and tour rating recalculated.' });
+        // Invalidate reviews list and the specific tour so the tour page updates immediately
+        queryClient.invalidateQueries({ queryKey: getListReviewsQueryKey() });
+        queryClient.invalidateQueries({ queryKey: getGetTourQueryKey(tourId) });
+        refetch();
+      } else {
+        setActionResult({ ok: false, message: data.error ?? 'Failed to delete review.' });
+      }
+    } catch {
+      setActionResult({ ok: false, message: 'Network error.' });
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const openEdit = (review: { id: number; rating: number; comment?: string | null }) => {
+    setEditingId(review.id);
+    setEditRating(Math.round(review.rating));
+    setEditComment(review.comment ?? '');
+    setActionResult(null);
+  };
+
+  const handleEdit = async (reviewId: number, tourId: number) => {
+    setActionResult(null);
+    try {
+      const token = localStorage.getItem('auth_token');
+      const resp = await fetch(`/api/reviews/${reviewId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ rating: editRating, comment: editComment }),
+      });
+      const data = await resp.json();
+      if (resp.ok) {
+        setActionResult({ ok: true, message: 'Review updated and tour rating recalculated.' });
+        setEditingId(null);
+        // Invalidate reviews list and the specific tour so the tour page updates immediately
+        queryClient.invalidateQueries({ queryKey: getListReviewsQueryKey() });
+        queryClient.invalidateQueries({ queryKey: getGetTourQueryKey(tourId) });
+        refetch();
+      } else {
+        setActionResult({ ok: false, message: data.error ?? 'Failed to update review.' });
+      }
+    } catch {
+      setActionResult({ ok: false, message: 'Network error.' });
+    }
+  };
+
+  return (
+    <div>
+      <div className="mb-6 flex flex-wrap items-end gap-4">
+        <div>
+          <h2 className="text-2xl font-serif font-bold mb-1">Review Moderation</h2>
+          <p className="text-muted-foreground text-sm">Delete or edit traveler reviews. Rating and count recalculate automatically.</p>
+        </div>
+        <div className="ml-auto flex items-end gap-3">
+          <div className="flex flex-col gap-1">
+            <label className="text-xs font-medium text-muted-foreground">Filter by Tour ID</label>
+            <input
+              type="number"
+              value={tourIdFilter}
+              onChange={e => setTourIdFilter(e.target.value)}
+              placeholder="Any tour"
+              className="text-sm border border-input rounded-lg px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 w-32"
+            />
+          </div>
+          <button
+            onClick={() => refetch()}
+            disabled={isLoading}
+            className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground border border-border rounded-lg px-3 py-2 bg-background hover:bg-muted/30 transition-all self-end"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      {actionResult && (
+        <div className={`mb-4 flex items-start gap-3 p-4 rounded-xl border text-sm ${actionResult.ok ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-red-50 border-red-200 text-red-800'}`}>
+          {actionResult.ok
+            ? <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0 text-emerald-600" />
+            : <XCircle className="w-4 h-4 mt-0.5 shrink-0 text-red-500" />
+          }
+          {actionResult.message}
+        </div>
+      )}
+
+      {isLoading ? (
+        <div className="p-12 flex items-center justify-center">
+          <RefreshCw className="w-6 h-6 animate-spin text-muted-foreground" />
+        </div>
+      ) : !reviews || reviews.length === 0 ? (
+        <div className="p-12 text-center text-muted-foreground">
+          <MessageSquare className="w-10 h-10 mx-auto mb-3 opacity-30" />
+          <p className="font-medium">No reviews found</p>
+          {tourIdFilter && <p className="text-sm mt-1">Try clearing the tour ID filter</p>}
+        </div>
+      ) : (
+        <div className="bg-card rounded-2xl border border-border shadow-sm overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm text-left">
+              <thead className="text-xs text-muted-foreground uppercase bg-muted/50 border-b border-border">
+                <tr>
+                  <th className="px-6 py-4 font-medium">ID</th>
+                  <th className="px-6 py-4 font-medium">Tour</th>
+                  <th className="px-6 py-4 font-medium">Reviewer</th>
+                  <th className="px-6 py-4 font-medium">Rating</th>
+                  <th className="px-6 py-4 font-medium">Comment</th>
+                  <th className="px-6 py-4 font-medium">Date</th>
+                  <th className="px-6 py-4 font-medium">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {(reviews as unknown as Array<{ id: number; tourId: number; tourTitle?: string | null; name?: string | null; country?: string | null; rating: number; comment?: string | null; createdAt: string }>).map(review => (
+                  <React.Fragment key={review.id}>
+                    <tr className="hover:bg-muted/20 transition-colors">
+                      <td className="px-6 py-4 font-mono text-xs text-muted-foreground">#{review.id}</td>
+                      <td className="px-6 py-4 max-w-[160px]">
+                        <Link href={`/tours/${review.tourId}`} className="hover:text-primary transition-colors font-medium truncate block" title={review.tourTitle ?? `Tour #${review.tourId}`}>
+                          {review.tourTitle ?? `Tour #${review.tourId}`}
+                        </Link>
+                        <span className="text-xs text-muted-foreground">ID {review.tourId}</span>
+                      </td>
+                      <td className="px-6 py-4">
+                        <p className="font-medium">{review.name ?? 'Anonymous'}</p>
+                        {review.country && <p className="text-xs text-muted-foreground">{review.country}</p>}
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex items-center gap-0.5">
+                          {[1, 2, 3, 4, 5].map(s => (
+                            <Star key={s} className={`w-3.5 h-3.5 ${s <= Math.round(review.rating) ? 'fill-accent text-accent' : 'text-muted-foreground'}`} />
+                          ))}
+                          <span className="ml-1 text-xs text-muted-foreground">{review.rating.toFixed(1)}</span>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 max-w-[240px]">
+                        <p className="text-muted-foreground text-xs leading-relaxed line-clamp-2">{review.comment ?? <em>No comment</em>}</p>
+                      </td>
+                      <td className="px-6 py-4 text-xs text-muted-foreground whitespace-nowrap">
+                        {format(new Date(review.createdAt), 'MMM dd, yyyy')}
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => openEdit(review)}
+                            disabled={deletingId === review.id}
+                            title="Edit review"
+                            className="p-1.5 rounded-lg hover:bg-blue-50 text-blue-600 transition-colors disabled:opacity-40"
+                          >
+                            <Pencil className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => handleDelete(review.id, review.tourId)}
+                            disabled={deletingId === review.id}
+                            title="Delete review"
+                            className="p-1.5 rounded-lg hover:bg-red-50 text-red-500 transition-colors disabled:opacity-40"
+                          >
+                            {deletingId === review.id
+                              ? <RefreshCw className="w-4 h-4 animate-spin" />
+                              : <Trash2 className="w-4 h-4" />
+                            }
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                    {editingId === review.id && (
+                      <tr className="bg-blue-50/60 border-t border-blue-100">
+                        <td colSpan={7} className="px-6 py-5">
+                          <div className="flex flex-wrap items-end gap-4">
+                            <div>
+                              <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Rating</label>
+                              <div className="flex items-center gap-1">
+                                {[1, 2, 3, 4, 5].map(s => (
+                                  <button key={s} type="button" onClick={() => setEditRating(s)} className="p-0.5">
+                                    <Star className={`w-6 h-6 transition-colors ${s <= editRating ? 'fill-accent text-accent' : 'text-muted-foreground'}`} />
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                            <div className="flex-1 min-w-[200px]">
+                              <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Comment</label>
+                              <textarea
+                                value={editComment}
+                                onChange={e => setEditComment(e.target.value)}
+                                rows={2}
+                                className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 resize-none"
+                              />
+                            </div>
+                            <div className="flex gap-2 self-end">
+                              <button
+                                onClick={() => handleEdit(review.id, review.tourId)}
+                                className="px-4 py-2 text-sm font-semibold rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+                              >
+                                Save
+                              </button>
+                              <button
+                                onClick={() => setEditingId(null)}
+                                className="px-4 py-2 text-sm font-medium rounded-lg border border-border hover:bg-muted/30 transition-colors"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="px-6 py-3 border-t border-border text-xs text-muted-foreground bg-muted/20">
+            {reviews.length} review{reviews.length !== 1 ? 's' : ''} shown
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -778,6 +1127,386 @@ function EmailSettingsPanel({ adminEmail }: { adminEmail: string }) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ── Users Management Panel ────────────────────────────────────────────────────
+
+interface AdminUser {
+  id: number;
+  email: string;
+  name: string;
+  role: 'customer' | 'vendor' | 'admin';
+  status: 'active' | 'suspended' | 'pending_approval';
+  avatar?: string | null;
+  phone?: string | null;
+  createdAt?: string;
+  tourCount?: number;
+}
+
+const ROLE_LABELS: Record<string, string> = { admin: 'Admin', vendor: 'Vendor', customer: 'Customer' };
+const ROLE_COLORS: Record<string, string> = {
+  admin:    'bg-violet-100 text-violet-800 border-violet-200',
+  vendor:   'bg-blue-100 text-blue-800 border-blue-200',
+  customer: 'bg-slate-100 text-slate-700 border-slate-200',
+};
+const STATUS_BADGE: Record<string, string> = {
+  active:           'bg-emerald-100 text-emerald-800 border-emerald-200',
+  suspended:        'bg-red-100 text-red-800 border-red-200',
+  pending_approval: 'bg-amber-100 text-amber-800 border-amber-200',
+};
+const STATUS_LABEL: Record<string, string> = {
+  active: 'Active', suspended: 'Suspended', pending_approval: 'Pending',
+};
+
+function UsersPanel({ currentUserId }: { currentUserId: number }) {
+  const [users, setUsers] = React.useState<AdminUser[]>([]);
+  const [isLoading, setIsLoading] = React.useState(false);
+  const [roleFilter, setRoleFilter] = React.useState<string>('all');
+  const [statusFilter, setStatusFilter] = React.useState<string>('all');
+  const [search, setSearch] = React.useState('');
+  const [actionResult, setActionResult] = React.useState<{ ok: boolean; message: string } | null>(null);
+  const [pendingId, setPendingId] = React.useState<number | null>(null);
+
+  const fetchUsers = React.useCallback(async () => {
+    setIsLoading(true);
+    setActionResult(null);
+    try {
+      const token = localStorage.getItem('auth_token');
+      const params = new URLSearchParams();
+      if (roleFilter !== 'all') params.set('role', roleFilter);
+      if (statusFilter !== 'all') params.set('status', statusFilter);
+      const resp = await fetch(`/api/admin/users?${params}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      const data = await resp.json();
+      if (resp.ok) setUsers(Array.isArray(data) ? data : []);
+      else setActionResult({ ok: false, message: data.error ?? 'Failed to load users.' });
+    } catch {
+      setActionResult({ ok: false, message: 'Network error.' });
+    } finally {
+      setIsLoading(false);
+    }
+  }, [roleFilter, statusFilter]);
+
+  React.useEffect(() => { fetchUsers(); }, [fetchUsers]);
+
+  const handleUpdate = async (userId: number, updates: { role?: string; status?: string }) => {
+    setPendingId(userId);
+    setActionResult(null);
+    try {
+      const token = localStorage.getItem('auth_token');
+      const resp = await fetch(`/api/admin/users/${userId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(updates),
+      });
+      const data = await resp.json();
+      if (resp.ok) {
+        setUsers(prev => prev.map(u => u.id === userId ? { ...u, ...data } : u));
+        const action = updates.role
+          ? `Role changed to ${ROLE_LABELS[updates.role] ?? updates.role}`
+          : updates.status === 'active' ? 'Account reactivated'
+          : updates.status === 'suspended' ? 'Account suspended'
+          : 'Account approved';
+        setActionResult({ ok: true, message: action });
+      } else {
+        setActionResult({ ok: false, message: data.error ?? 'Update failed.' });
+      }
+    } catch {
+      setActionResult({ ok: false, message: 'Network error.' });
+    } finally {
+      setPendingId(null);
+    }
+  };
+
+  const handleDelete = async (u: AdminUser) => {
+    if (!confirm(`Permanently delete ${u.name} (${u.email})?\n\nThis cannot be undone.`)) return;
+    setPendingId(u.id);
+    setActionResult(null);
+    try {
+      const token = localStorage.getItem('auth_token');
+      const resp = await fetch(`/api/admin/users/${u.id}`, {
+        method: 'DELETE',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      const data = await resp.json();
+      if (resp.ok) {
+        setUsers(prev => prev.filter(x => x.id !== u.id));
+        setActionResult({ ok: true, message: `${u.name} has been deleted.` });
+      } else {
+        setActionResult({ ok: false, message: data.error ?? 'Delete failed.' });
+      }
+    } catch {
+      setActionResult({ ok: false, message: 'Network error.' });
+    } finally {
+      setPendingId(null);
+    }
+  };
+
+  const filtered = users.filter(u => {
+    if (!search) return true;
+    const q = search.toLowerCase();
+    return u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q);
+  });
+
+  const pending = filtered.filter(u => u.status === 'pending_approval');
+  const rest    = filtered.filter(u => u.status !== 'pending_approval');
+  const sorted  = [...pending, ...rest];
+
+  return (
+    <div>
+      {/* Header + filter bar */}
+      <div className="flex flex-wrap items-end gap-4 mb-6">
+        <div>
+          <h2 className="text-2xl font-serif font-bold mb-1">User Management</h2>
+          <p className="text-muted-foreground text-sm">Manage accounts, roles, and vendor approvals.</p>
+        </div>
+
+        {/* Stats pills */}
+        <div className="flex items-center gap-2 ml-auto flex-wrap">
+          {(['all','admin','vendor','customer'] as const).map(r => {
+            const cnt = r === 'all' ? users.length : users.filter(u => u.role === r).length;
+            return (
+              <button
+                key={r}
+                onClick={() => setRoleFilter(r)}
+                className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition-all ${
+                  roleFilter === r
+                    ? r === 'all' ? 'bg-foreground text-background border-foreground'
+                      : ROLE_COLORS[r]
+                    : 'bg-background text-muted-foreground border-border hover:bg-muted/30'
+                }`}
+              >
+                {r === 'all' ? 'All' : ROLE_LABELS[r]} ({cnt})
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Search + status filter + refresh row */}
+      <div className="bg-card rounded-2xl border border-border shadow-sm p-4 mb-5 flex flex-wrap items-center gap-3">
+        <div className="relative flex-1 min-w-[200px]">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search by name or email…"
+            className="w-full pl-9 pr-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary/30"
+          />
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label className="text-xs font-medium text-muted-foreground">Status</label>
+          <select
+            value={statusFilter}
+            onChange={e => setStatusFilter(e.target.value)}
+            className="text-sm border border-input rounded-lg px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-primary/30"
+          >
+            <option value="all">All statuses</option>
+            <option value="active">Active</option>
+            <option value="pending_approval">Pending approval</option>
+            <option value="suspended">Suspended</option>
+          </select>
+        </div>
+
+        {(search || roleFilter !== 'all' || statusFilter !== 'all') && (
+          <button
+            onClick={() => { setSearch(''); setRoleFilter('all'); setStatusFilter('all'); }}
+            className="text-xs text-muted-foreground hover:text-foreground underline self-end pb-2"
+          >
+            Clear filters
+          </button>
+        )}
+
+        <button
+          onClick={fetchUsers}
+          disabled={isLoading}
+          className="ml-auto flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground border border-border rounded-lg px-3 py-2 bg-background hover:bg-muted/30 transition-all"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+          Refresh
+        </button>
+      </div>
+
+      {/* Action feedback */}
+      {actionResult && (
+        <div className={`mb-4 flex items-start gap-3 p-4 rounded-xl border text-sm ${actionResult.ok ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-red-50 border-red-200 text-red-800'}`}>
+          {actionResult.ok
+            ? <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0 text-emerald-600" />
+            : <XCircle className="w-4 h-4 mt-0.5 shrink-0 text-red-500" />
+          }
+          {actionResult.message}
+        </div>
+      )}
+
+      {/* Table */}
+      {isLoading ? (
+        <div className="p-12 flex items-center justify-center">
+          <RefreshCw className="w-6 h-6 animate-spin text-muted-foreground" />
+        </div>
+      ) : sorted.length === 0 ? (
+        <div className="p-12 text-center text-muted-foreground">
+          <Users className="w-10 h-10 mx-auto mb-3 opacity-30" />
+          <p className="font-medium">No users found</p>
+          {(search || roleFilter !== 'all' || statusFilter !== 'all') && (
+            <p className="text-sm mt-1">Try clearing your filters</p>
+          )}
+        </div>
+      ) : (
+        <div className="bg-card rounded-2xl border border-border shadow-sm overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm text-left">
+              <thead className="text-xs text-muted-foreground uppercase bg-muted/50 border-b border-border">
+                <tr>
+                  <th className="px-6 py-4 font-medium">User</th>
+                  <th className="px-6 py-4 font-medium">Role</th>
+                  <th className="px-6 py-4 font-medium">Status</th>
+                  <th className="px-6 py-4 font-medium text-center">Tours</th>
+                  <th className="px-6 py-4 font-medium">Joined</th>
+                  <th className="px-6 py-4 font-medium">Change Role</th>
+                  <th className="px-6 py-4 font-medium">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {sorted.map(u => {
+                  const isPending = pendingId === u.id;
+                  const isSelf   = u.id === currentUserId;
+                  return (
+                    <tr
+                      key={u.id}
+                      className={`hover:bg-muted/20 transition-colors ${u.status === 'pending_approval' ? 'bg-amber-50/40' : ''}`}
+                    >
+                      {/* User info */}
+                      <td className="px-6 py-4">
+                        <p className="font-semibold">{u.name}{isSelf && <span className="ml-1.5 text-[10px] font-bold text-primary bg-primary/10 px-1.5 py-0.5 rounded-full">You</span>}</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">{u.email}</p>
+                        {u.phone && <p className="text-xs text-muted-foreground/60 mt-0.5">{u.phone}</p>}
+                      </td>
+
+                      {/* Role badge */}
+                      <td className="px-6 py-4">
+                        <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold border ${ROLE_COLORS[u.role]}`}>
+                          {u.role === 'admin' && <Shield className="w-3 h-3" />}
+                          {u.role === 'vendor' && <Building2 className="w-3 h-3" />}
+                          {u.role === 'customer' && <Users className="w-3 h-3" />}
+                          {ROLE_LABELS[u.role]}
+                        </span>
+                      </td>
+
+                      {/* Status badge + quick-approve/suspend */}
+                      <td className="px-6 py-4">
+                        <div className="flex flex-col gap-1.5">
+                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold border ${STATUS_BADGE[u.status]}`}>
+                            {STATUS_LABEL[u.status]}
+                          </span>
+                          {u.status === 'pending_approval' && (
+                            <div className="flex gap-1">
+                              <button
+                                onClick={() => handleUpdate(u.id, { status: 'active' })}
+                                disabled={isPending}
+                                title="Approve vendor"
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold bg-emerald-100 text-emerald-800 hover:bg-emerald-200 transition-colors disabled:opacity-50"
+                              >
+                                <CheckCircle2 className="w-3 h-3" /> Approve
+                              </button>
+                              <button
+                                onClick={() => handleUpdate(u.id, { status: 'suspended' })}
+                                disabled={isPending}
+                                title="Reject vendor"
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold bg-red-100 text-red-800 hover:bg-red-200 transition-colors disabled:opacity-50"
+                              >
+                                <XCircle className="w-3 h-3" /> Reject
+                              </button>
+                            </div>
+                          )}
+                          {u.status === 'active' && !isSelf && (
+                            <button
+                              onClick={() => handleUpdate(u.id, { status: 'suspended' })}
+                              disabled={isPending}
+                              title="Suspend account"
+                              className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground hover:text-red-600 transition-colors disabled:opacity-50"
+                            >
+                              <UserX className="w-3 h-3" /> Suspend
+                            </button>
+                          )}
+                          {u.status === 'suspended' && (
+                            <button
+                              onClick={() => handleUpdate(u.id, { status: 'active' })}
+                              disabled={isPending}
+                              title="Reactivate account"
+                              className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground hover:text-emerald-600 transition-colors disabled:opacity-50"
+                            >
+                              <UserCheck className="w-3 h-3" /> Reactivate
+                            </button>
+                          )}
+                        </div>
+                      </td>
+
+                      {/* Tour count */}
+                      <td className="px-6 py-4 text-center">
+                        {u.role === 'vendor' ? (
+                          <span className="font-semibold">{u.tourCount ?? 0}</span>
+                        ) : (
+                          <span className="text-muted-foreground/40">—</span>
+                        )}
+                      </td>
+
+                      {/* Joined date */}
+                      <td className="px-6 py-4 text-xs text-muted-foreground whitespace-nowrap">
+                        {u.createdAt ? format(new Date(u.createdAt), 'MMM dd, yyyy') : '—'}
+                      </td>
+
+                      {/* Change role */}
+                      <td className="px-6 py-4">
+                        <div className="relative inline-block">
+                          <select
+                            value={u.role}
+                            disabled={isPending || isSelf}
+                            onChange={e => handleUpdate(u.id, { role: e.target.value })}
+                            className={`appearance-none pr-6 pl-2 py-1 text-xs font-semibold rounded-lg border cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all ${ROLE_COLORS[u.role]} ${(isPending || isSelf) ? 'opacity-50 cursor-not-allowed' : ''}`}
+                          >
+                            <option value="customer">Customer</option>
+                            <option value="vendor">Vendor</option>
+                            <option value="admin">Admin</option>
+                          </select>
+                          <ChevronDown className="absolute right-1 top-1/2 -translate-y-1/2 w-3 h-3 pointer-events-none opacity-60" />
+                        </div>
+                        {isSelf && <p className="text-[10px] text-muted-foreground/50 mt-0.5">Can't change own role</p>}
+                      </td>
+
+                      {/* Delete */}
+                      <td className="px-6 py-4">
+                        <button
+                          onClick={() => handleDelete(u)}
+                          disabled={isPending || isSelf}
+                          title={isSelf ? 'Cannot delete your own account' : 'Delete user'}
+                          className="p-1.5 rounded-lg hover:bg-red-50 text-red-400 hover:text-red-600 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          {isPending
+                            ? <RefreshCw className="w-4 h-4 animate-spin" />
+                            : <Trash2 className="w-4 h-4" />
+                          }
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="px-6 py-3 border-t border-border bg-muted/20 text-xs text-muted-foreground">
+            {sorted.length} user{sorted.length !== 1 ? 's' : ''} shown
+            {pending.length > 0 && <span className="ml-2 text-amber-700 font-semibold">· {pending.length} pending approval</span>}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
